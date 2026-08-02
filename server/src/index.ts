@@ -9,7 +9,7 @@ import {
   ensureDirs, loadDB, saveDB, UPLOAD_DIR, MUSIC_DIR,
   type VoiceSource, type Book, type MusicTrack,
 } from './storage.js';
-import { probeMedia, fileFingerprint, signatureFromFingerprint, timbreTagFor } from './voice.js';
+import { probeMedia, fileFingerprint, analyzeAudioFeatures, signatureFromFeatures, timbreTagFor } from './voice.js';
 import { ensureDemoMusic } from './music.js';
 import { SEED_BOOKS } from './seed.js';
 
@@ -71,8 +71,9 @@ app.post('/api/voices/upload', voiceUpload.single('file'), async (req, res) => {
     const name = (req.body.name as string)?.trim() || stripExt(req.file.originalname);
     const { durationSec, mime } = await probeMedia(req.file.path);
     const fp = await fileFingerprint(req.file.path);
-    const signature = signatureFromFingerprint(fp);
-    const timbreTag = timbreTagFor(signature);
+    const features = await analyzeAudioFeatures(req.file.path);
+    const signature = signatureFromFeatures(features, fp);
+    const timbreTag = timbreTagFor(signature, features);
 
     const voice: VoiceSource = {
       id: nanoid(10),
