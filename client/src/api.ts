@@ -1,7 +1,18 @@
 import type { VoiceSource, Book, BookListItem, MusicTrack } from './types.js';
 
-const base = '/api';
-const mediaBase = '/media';
+/**
+ * API 前缀支持通过构建时环境变量覆盖：
+ *   - VITE_API_BASE：默认空 → 同域名同源 /api
+ *     例：VITE_API_BASE="https://xxx.ngrok-free.app"  → 所有请求走指定后端
+ *   - VITE_MEDIA_BASE：默认空 → 同域名同源 /media
+ *
+ * 这在 Spaces 反代、跨域部署或本地调试远程后端时很有用。
+ */
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+const MEDIA_BASE = (import.meta.env.VITE_MEDIA_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+
+const apiPrefix = API_BASE + '/api';
+const mediaPrefix = MEDIA_BASE + '/media';
 
 async function jget<T>(url: string): Promise<T> {
   const r = await fetch(url);
@@ -10,33 +21,33 @@ async function jget<T>(url: string): Promise<T> {
 }
 
 export const api = {
-  health: () => jget<{ ok: boolean }>(`${base}/health`),
+  health: () => jget<{ ok: boolean }>(`${apiPrefix}/health`),
 
-  listVoices: () => jget<VoiceSource[]>(`${base}/voices`),
+  listVoices: () => jget<VoiceSource[]>(`${apiPrefix}/voices`),
   uploadVoice: (file: File, name: string) => {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('name', name);
-    return fetch(`${base}/voices/upload`, { method: 'POST', body: fd }).then((r) =>
+    return fetch(`${apiPrefix}/voices/upload`, { method: 'POST', body: fd }).then((r) =>
       r.ok ? r.json() : Promise.reject(new Error('上传失败')),
     ) as Promise<VoiceSource>;
   },
   deleteVoice: (id: string) =>
-    fetch(`${base}/voices/${id}`, { method: 'DELETE' }).then((r) => r.ok),
+    fetch(`${apiPrefix}/voices/${id}`, { method: 'DELETE' }).then((r) => r.ok),
 
-  listBooks: () => jget<BookListItem[]>(`${base}/books`),
-  getBook: (id: string) => jget<Book>(`${base}/books/${id}`),
+  listBooks: () => jget<BookListItem[]>(`${apiPrefix}/books`),
+  getBook: (id: string) => jget<Book>(`${apiPrefix}/books/${id}`),
 
-  listMusic: () => jget<MusicTrack[]>(`${base}/music`),
+  listMusic: () => jget<MusicTrack[]>(`${apiPrefix}/music`),
   uploadMusic: (file: File, title: string, artist: string) => {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('title', title);
     fd.append('artist', artist);
-    return fetch(`${base}/music/upload`, { method: 'POST', body: fd }).then((r) =>
+    return fetch(`${apiPrefix}/music/upload`, { method: 'POST', body: fd }).then((r) =>
       r.ok ? r.json() : Promise.reject(new Error('上传失败')),
     ) as Promise<MusicTrack>;
   },
 
-  mediaUrl: (rel: string) => `${mediaBase}/${rel}`,
+  mediaUrl: (rel: string) => `${mediaPrefix}/${rel}`,
 };

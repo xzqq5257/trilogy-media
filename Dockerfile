@@ -3,6 +3,12 @@ FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
+# 允许构建时覆盖前端 API / media 前缀（兼容 Spaces 子路径反向代理）
+ARG VITE_API_BASE=""
+ARG VITE_MEDIA_BASE=""
+ENV VITE_API_BASE=${VITE_API_BASE}
+ENV VITE_MEDIA_BASE=${VITE_MEDIA_BASE}
+
 # 先装依赖（利用层缓存）
 COPY package.json package-lock.json* ./
 COPY client/package.json ./client/
@@ -33,14 +39,17 @@ RUN npm ci --omit=dev --no-audit --no-fund
 COPY server ./server
 COPY --from=builder /app/client/dist ./client/dist
 
-# 数据目录（挂载持久卷）
-RUN mkdir -p /app/server/data
-ENV DATA_DIR=/app/server/data
-ENV PORT=8787
+# Hugging Face Spaces 要求监听 7860，也可用 PORT 环境变量覆盖
+# 数据目录：优先 /data（Spaces Persistent Storage 挂载点），其次 /app/server/data
+RUN mkdir -p /data /app/server/data
+ENV DATA_DIR=/data
+ENV PORT=7860
 
-EXPOSE 8787
+EXPOSE 7860
 
-# 数据卷
-VOLUME ["/app/server/data"]
+VOLUME ["/data"]
+
+# Spaces 非 root 运行，确保 /data 与 /app 可写
+RUN chmod -R a+rw /data /app || true
 
 CMD ["node", "--import", "tsx/esm", "server/src/index.ts"]

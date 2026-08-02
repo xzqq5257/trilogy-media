@@ -1,11 +1,13 @@
 import { create } from 'zustand';
 import type { MusicTrack } from './types.js';
 
+/** 与 client/src/api.ts 保持一致的媒体前缀默认值 */
+const MEDIA_BASE = ((import.meta as any).env?.VITE_MEDIA_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+
 interface PlayerState {
   current: MusicTrack | null;
   isPlaying: boolean;
   queue: MusicTrack[];
-  // audio element is created once and held outside React
   audio: HTMLAudioElement | null;
   registerAudio: (el: HTMLAudioElement) => void;
   playTrack: (track: MusicTrack, queue?: MusicTrack[]) => void;
@@ -25,7 +27,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   playTrack: (track, queue) => {
     const audio = get().audio;
     if (audio) {
-      audio.src = `/media/${track.path}`;
+      audio.src = `${MEDIA_BASE}/media/${track.path}`;
       audio.play().catch(() => {});
     }
     set({ current: track, isPlaying: true, queue: queue || [track] });
