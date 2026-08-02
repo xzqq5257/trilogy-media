@@ -2,11 +2,11 @@ import { api } from '../api.js';
 import type { VoiceSignature, VoiceSource } from '../types.js';
 
 /**
- * TTSEngine — uses server-side Edge TTS for natural voice synthesis.
+ * TTSEngine — hybrid TTS engine.
  *
- * Instead of the browser's Web Speech API (which has limited voices and
- * can't clone voices), this engine sends text to the server which uses
- * Microsoft Edge TTS with a voice matched to the uploaded audio sample.
+ * 1. Tries server-side Edge TTS (natural AI voices, voice-matched to source)
+ * 2. Falls back to browser Web Speech API if server TTS is unavailable
+ * 3. Applies EQ post-processing via Web Audio API (warmth control)
  */
 type Handlers = {
   onChunkStart?: (chunkIndex: number, text: string) => void;
@@ -24,20 +24,43 @@ export function splitSentences(text: string): string[] {
 }
 
 class TTSEngine {
+  // Server-side TTS (Edge TTS)
   private audio: HTMLAudioElement | null = null;
+  private useServerTts = false;
+  private ttsChecked = false;
+
+  // Web Speech API fallback
+  private synth: SpeechSynthesis | null;
+  voices: SpeechSynthesisVoice[] = [];
+  private wsUtterance: SpeechSynthesisUtterance | null = null;
+
+  // Shared state
   private queue: string[] = [];
   private cursor = 0;
-  private activeVoiceId: string | null = null;
+  private activeVoice: VoiceSource | null = null;
   private handlers: Handlers = {};
   private cancelled = false;
   private isPlaying = false;
 
-  // Web Audio API for EQ post-processing
+  // Web Audio API for EQ
   private audioCtx: AudioContext | null = null;
   private eqLow: BiquadFilterNode | null = null;
   private eqMid: BiquadFilterNode | null = null;
   private eqHigh: BiquadFilterNode | null = null;
   private sourceNode: MediaElementAudioSourceNode | null = null;
+
+  constructor() {
+    this.synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
+    if (this.synth) {
+      this.refreshVoices();
+      this.synth.onvoiceschanged = () => this.refreshVoices();
+    }
+  }
+
+  private refreshVoices() {
+    if (!this.synth) return;
+    this.voices = this.synth.getVoices();
+  }
 
   get supported() {
     return typeof window !== 'undefined';
@@ -45,17 +68,26 @@ class TTSEngine {
 
   get state(): 'playing' | 'paused' | 'idle' {
     if (this.isPlaying) {
-      return this.audio?.paused ? 'paused' : 'playing';
+      if (this.audio) return this.audio.paused ? 'paused' : 'playing';
+      if (this.synth) return this.synth.paused ? 'paused' : 'playing';
     }
     return 'idle';
   }
 
+  // ---- Health check ----
+
+  private async checkTts() {
+    if (this.ttsChecked) return;
+    this.ttsChecked = true;
+    this.useServerTts = await api.ttsHealth();
+  }
+
+  // ---- Audio chain ----
+
   private setupAudioChain(sig: VoiceSignature) {
     this.teardownAudioChain();
-
     this.audioCtx = new AudioContext();
 
-    // 3-band EQ based on warmth
     this.eqLow = this.audioCtx.createBiquadFilter();
     this.eqLow.type = 'lowshelf';
     this.eqLow.frequency.value = 320;
@@ -90,20 +122,24 @@ class TTSEngine {
     this.sourceNode = null;
   }
 
+  // ---- Speak ----
+
   speak(text: string, voice: VoiceSource, handlers: Handlers = {}) {
     this.stop();
     this.cancelled = false;
     this.handlers = handlers;
-    this.activeVoiceId = voice.id;
+    this.activeVoice = voice;
     this.queue = splitSentences(text);
     this.cursor = 0;
 
     this.setupAudioChain(voice.signature);
     handlers.onStart?.();
-    this.speakNext(voice);
+
+    // Check TTS availability and start
+    this.checkTts().then(() => this.speakNext());
   }
 
-  private async speakNext(voice: VoiceSource) {
+  private speakNext() {
     if (this.cancelled) return;
     if (this.cursor >= this.queue.length) {
       this.handlers.onEnd?.();
@@ -115,80 +151,152 @@ class TTSEngine {
     const text = this.queue[idx];
     this.handlers.onChunkStart?.(idx, text);
 
-    try {
-      const audioUrl = await api.tts(text, voice.id);
-      this.playAudio(audioUrl, idx, voice);
-    } catch {
-      // Fallback: skip this sentence and continue
-      this.handlers.onChunkEnd?.(idx);
-      this.cursor++;
-      this.speakNext(voice);
+    if (this.useServerTts && this.activeVoice) {
+      this.speakViaServer(text, idx, this.activeVoice);
+    } else {
+      this.speakViaWebSpeech(text, idx, this.activeVoice);
     }
   }
 
-  private playAudio(url: string, idx: number, voice: VoiceSource) {
+  // ---- Server-side TTS (Edge TTS) ----
+
+  private async speakViaServer(text: string, idx: number, voice: VoiceSource) {
+    try {
+      const audioUrl = await api.tts(text, voice.id);
+      this.playAudioUrl(audioUrl, idx, voice);
+    } catch {
+      // Server TTS failed, fall back to Web Speech API for this session
+      this.useServerTts = false;
+      this.speakViaWebSpeech(text, idx, voice);
+    }
+  }
+
+  private playAudioUrl(url: string, idx: number, voice: VoiceSource) {
     this.audio = new Audio(url);
     this.audio.preload = 'auto';
-
-    // Apply pitch/rate from signature
-    // Note: playbackRate is supported, but preservesPitch might not be
     this.audio.playbackRate = voice.signature.rate;
     this.audio.preservesPitch = false;
 
-    // Route through EQ chain if available
     if (this.audioCtx && this.eqLow) {
       try {
         this.sourceNode = this.audioCtx.createMediaElementSource(this.audio);
         this.sourceNode.connect(this.eqLow);
-      } catch {
-        // Already connected
-      }
+      } catch {}
     }
 
     this.audio.onended = () => {
       URL.revokeObjectURL(url);
       this.handlers.onChunkEnd?.(idx);
       this.cursor++;
-      this.speakNext(voice);
+      this.speakNext();
     };
-
     this.audio.onerror = () => {
       URL.revokeObjectURL(url);
       this.handlers.onChunkEnd?.(idx);
       this.cursor++;
-      this.speakNext(voice);
+      this.speakNext();
     };
 
     this.audio.play().catch(() => {});
     this.isPlaying = true;
   }
 
+  // ---- Web Speech API fallback ----
+
+  private speakViaWebSpeech(text: string, idx: number, voice: VoiceSource | null) {
+    if (!this.synth) {
+      this.handlers.onChunkEnd?.(idx);
+      this.cursor++;
+      this.speakNext();
+      return;
+    }
+
+    const u = new SpeechSynthesisUtterance(text);
+    const v = this.pickVoice(voice);
+    if (v) {
+      u.voice = v;
+      u.lang = v.lang;
+    }
+    if (voice) {
+      const sig = voice.signature;
+      const semitoneMult = Math.pow(2, sig.semitones / 12);
+      u.pitch = clamp(sig.pitch * semitoneMult, 0.1, 2);
+      u.rate = clamp(sig.rate, 0.5, 2);
+      u.volume = clamp(0.7 + sig.warmth * 0.3, 0.3, 1);
+    }
+
+    u.onend = () => {
+      this.handlers.onChunkEnd?.(idx);
+      this.cursor++;
+      this.speakNext();
+    };
+    u.onerror = () => {
+      this.handlers.onChunkEnd?.(idx);
+      this.cursor++;
+      this.speakNext();
+    };
+
+    this.wsUtterance = u;
+    this.synth.speak(u);
+    this.isPlaying = true;
+  }
+
+  private pickVoice(voice: VoiceSource | null): SpeechSynthesisVoice | null {
+    if (!this.voices.length) return null;
+    const zh = this.voices.filter(
+      (v) => /zh|cmn|Chinese/i.test(v.lang) || /Chinese/i.test(v.name),
+    );
+    const pool = zh.length ? zh : this.voices;
+    const idx = voice?.signature.voiceIndex ?? 0;
+    return pool[idx % pool.length];
+  }
+
+  // ---- Controls ----
+
   pause() {
-    this.audio?.pause();
+    if (this.audio) {
+      this.audio.pause();
+    } else if (this.synth) {
+      this.synth.pause();
+    }
   }
 
   resume() {
-    this.audio?.play().catch(() => {});
+    if (this.audio) {
+      this.audio.play().catch(() => {});
+    } else if (this.synth) {
+      this.synth.resume();
+    }
   }
 
   stop() {
     this.cancelled = true;
     this.queue = [];
     this.cursor = 0;
-    this.activeVoiceId = null;
+    this.activeVoice = null;
     this.isPlaying = false;
+
     if (this.audio) {
       this.audio.pause();
       this.audio.src = '';
       this.audio = null;
     }
+    if (this.synth) {
+      this.synth.cancel();
+    }
+    this.ttsChecked = false;
+    this.useServerTts = false;
+
     this.teardownAudioChain();
   }
 
-  /** Speak a short preview snippet. */
   preview(voice: VoiceSource, text: string) {
     this.speak(text, voice, {});
   }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, n));
 }
 
 export const tts = new TTSEngine();

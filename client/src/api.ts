@@ -51,6 +51,16 @@ export const api = {
 
   mediaUrl: (rel: string) => `${mediaPrefix}/${rel}`,
 
+  /** Check if server-side TTS is available. */
+  ttsHealth: async (): Promise<boolean> => {
+    try {
+      const r = await fetch(`${apiPrefix}/tts/health`, { signal: AbortSignal.timeout(3000) });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  },
+
   /** Generate TTS audio for text using a voice source. Returns Blob URL. */
   tts: async (text: string, voiceId: string): Promise<string> => {
     const r = await fetch(`${apiPrefix}/tts`, {

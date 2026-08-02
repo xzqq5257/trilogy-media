@@ -166,6 +166,19 @@ function stripExt(name: string) {
 // ---- TTS cache ----
 const TTS_CACHE_DIR = path.join(DATA_DIR, 'tts-cache');
 
+// ---- TTS health check ----
+app.get('/api/tts/health', async (_req, res) => {
+  try {
+    // Check if Python and edge-tts are available
+    const { execSync } = await import('node:child_process');
+    const result = execSync('python3 -c "import edge_tts; print(1)"', { timeout: 5000, encoding: 'utf-8' }).trim();
+    if (result === '1') {
+      return res.json({ ok: true, engine: 'edge-tts' });
+    }
+  } catch {}
+  res.json({ ok: false, engine: 'unavailable' });
+});
+
 // ---- TTS endpoint ----
 app.post('/api/tts', async (req, res) => {
   try {
