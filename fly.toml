@@ -1,0 +1,22 @@
+# Fly.io 配置
+app = "trilogy-media"
+primary_region = "nrt"   # 东京，离国内最近的免费可用区
+
+[build]
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = true   # 空闲自动停机，省免费额度
+  auto_start_machines = true  # 有请求自动唤醒
+  min_machines_running = 0
+
+# 持久卷：声源/上传素材/音乐不丢
+[[mounts]]
+  source = "trilogy_data"
+  destination = "/app/server/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

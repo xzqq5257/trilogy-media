@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0a0a0f;
+  color: #e8e8f0;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2c2c3d; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a4f; }
+
+@layer components {
+  .card {
+    @apply rounded-2xl bg-ink-800/70 border border-white/5 backdrop-blur;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-white hover:bg-accent-soft shadow-lg shadow-accent/20;
+  }
+  .btn-ghost {
+    @apply btn bg-white/5 text-white/80 hover:bg-white/10;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-white/5 px-3 py-1 text-xs text-white/60;
+  }
+}
+
+/* Subtle ambient gradient */
+.app-bg {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(124,92,255,0.18), transparent 60%),
+    radial-gradient(1000px 500px at 100% 0%, rgba(236,72,153,0.10), transparent 55%),
+    #0a0a0f;
+}
+
+.reader-prose p {
+  margin: 0 0 1.25em;
+  line-height: 2;
+  font-size: 1.075rem;
+  text-indent: 2em;
+}
+
+.reader-prose p.is-active {
+  background: linear-gradient(90deg, rgba(124,92,255,0.18), transparent);
+  border-radius: 8px;
+}
+
+/* Range slider */
+input[type="range"].slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.15);
+  outline: none;
+}
+input[type="range"].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #a78bfa;
+  cursor: pointer;
+  box-shadow: 0 0 0 4px rgba(124,92,255,0.2);
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.pulse-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(124,92,255,0.6);
+  animation: pulse-ring 1.6s ease-out infinite;
+}

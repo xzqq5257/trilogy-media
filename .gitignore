@@ -1,0 +1,21 @@
+# 依赖
+node_modules
+**/node_modules
+
+# 构建产物（部署时由 Dockerfile 重新构建）
+client/dist
+
+# 运行时数据（声源/上传/音乐，部署时由持久卷承载）
+server/data
+
+# 日志
+*.log
+npm-debug.log*
+
+# 系统
+.DS_Store
+.idea
+.vscode
+
+# 占位文件
+.placeholder
