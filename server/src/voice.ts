@@ -274,6 +274,7 @@ export async function matchVoice(features: AudioFeatures): Promise<string> {
       String(features.brightness),
       String(features.rmsDb),
       String(features.dynamicRange),
+      String(features.silenceRatio),
     ]);
     let out = '';
     p.stdout.on('data', (d) => (out += d.toString()));

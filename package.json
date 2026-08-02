@@ -8,6 +8,7 @@
     "client"
   ],
   "scripts": {
+    "setup": "pip3 install edge-tts 2>/dev/null; echo 'Setup done'",
     "dev": "concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
