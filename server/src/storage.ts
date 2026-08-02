@@ -3,7 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = path.resolve(__dirname, '../data');
+/**
+ * 数据目录：
+ * - 优先读 DATA_DIR 环境变量（云托管/Spaces 挂载点）
+ * - 否则回退到源码相对路径 ../data（本地开发）
+ */
+export const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(__dirname, '../data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 export const MUSIC_DIR = path.join(DATA_DIR, 'music');
 export const DB_FILE = path.join(DATA_DIR, 'db.json');

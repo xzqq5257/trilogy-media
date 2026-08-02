@@ -1,0 +1,38 @@
+{
+  "envId": "{{ENV_ID}}",
+  "version": "1.0.0",
+  "$schema": "https://framework-1258016665.tcloudbaseapp.com/schema/latest.json",
+  "functions": [],
+  "containers": [
+    {
+      "name": "trilogy-server",
+      "path": "/",
+      "dockerfile": "Dockerfile",
+      "buildDir": "./",
+      "cpu": 0.5,
+      "mem": 1,
+      "minNum": 0,
+      "maxNum": 3,
+      "policyType": "cpu",
+      "policyThreshold": 60,
+      "envVariables": {
+        "NODE_ENV": "production"
+      },
+      "localPath": "./",
+      "serviceName": "trilogy-server",
+      "isPublic": true,
+      "accessType": "PUBLIC"
+    }
+  ],
+  "staticHostings": [
+    {
+      "name": "trilogy-web",
+      "source": "client/dist",
+      "buildCommand": "npm install && npm run build -w client",
+      "buildOutput": "client/dist",
+      "envId": "{{ENV_ID}}",
+      "deployPath": "/",
+      "ignore": []
+    }
+  ]
+}
