@@ -50,4 +50,16 @@ export const api = {
   },
 
   mediaUrl: (rel: string) => `${mediaPrefix}/${rel}`,
+
+  /** Generate TTS audio for text using a voice source. Returns Blob URL. */
+  tts: async (text: string, voiceId: string): Promise<string> => {
+    const r = await fetch(`${apiPrefix}/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voiceId }),
+    });
+    if (!r.ok) throw new Error('TTS 生成失败');
+    const blob = await r.blob();
+    return URL.createObjectURL(blob);
+  },
 };

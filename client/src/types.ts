@@ -17,6 +17,7 @@ export interface VoiceSource {
   samplePath: string;
   signature: VoiceSignature;
   timbreTag: string;
+  matchedVoice?: string;
 }
 
 export interface BookListItem {

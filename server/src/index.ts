@@ -2,14 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  ensureDirs, loadDB, saveDB, UPLOAD_DIR, MUSIC_DIR,
+  ensureDirs, loadDB, saveDB, UPLOAD_DIR, MUSIC_DIR, DATA_DIR,
   type VoiceSource, type Book, type MusicTrack,
 } from './storage.js';
-import { probeMedia, fileFingerprint, analyzeAudioFeatures, signatureFromFeatures, timbreTagFor } from './voice.js';
+import { probeMedia, fileFingerprint, analyzeAudioFeatures, signatureFromFeatures, timbreTagFor, matchVoice, generateTts } from './voice.js';
 import { ensureDemoMusic } from './music.js';
 import { SEED_BOOKS } from './seed.js';
 
@@ -74,6 +75,8 @@ app.post('/api/voices/upload', voiceUpload.single('file'), async (req, res) => {
     const features = await analyzeAudioFeatures(req.file.path);
     const signature = signatureFromFeatures(features, fp);
     const timbreTag = timbreTagFor(signature, features);
+    // Match to closest Edge TTS voice
+    const matchedVoice = await matchVoice(features);
 
     const voice: VoiceSource = {
       id: nanoid(10),
@@ -86,6 +89,7 @@ app.post('/api/voices/upload', voiceUpload.single('file'), async (req, res) => {
       samplePath: `uploads/${req.file.filename}`,
       signature,
       timbreTag,
+      matchedVoice,
     };
     const db = await loadDB();
     db.voices.push(voice);
@@ -158,6 +162,46 @@ app.post('/api/music/upload', musicUpload.single('file'), async (req, res) => {
 function stripExt(name: string) {
   return name.replace(/\.[^.]+$/, '');
 }
+
+// ---- TTS cache ----
+const TTS_CACHE_DIR = path.join(DATA_DIR, 'tts-cache');
+
+// ---- TTS endpoint ----
+app.post('/api/tts', async (req, res) => {
+  try {
+    const { text, voiceId } = req.body as { text?: string; voiceId?: string };
+    if (!text || !voiceId) return res.status(400).json({ error: '缺少 text 或 voiceId' });
+
+    const db = await loadDB();
+    const voice = db.voices.find((v) => v.id === voiceId);
+    if (!voice) return res.status(404).json({ error: '声源未找到' });
+
+    const ttsVoice = voice.matchedVoice || 'zh-CN-XiaoxiaoNeural';
+
+    // Cache key: hash of text + voice
+    const cacheKey = createHash('md5').update(`${text}:${ttsVoice}`).digest('hex');
+    const cacheFile = path.join(TTS_CACHE_DIR, `${cacheKey}.mp3`);
+
+    await fs.mkdir(TTS_CACHE_DIR, { recursive: true });
+
+    // Return cached file if exists
+    if (existsSync(cacheFile)) {
+      return res.sendFile(cacheFile);
+    }
+
+    // Generate new TTS audio
+    await generateTts(text, ttsVoice, cacheFile);
+
+    // Verify generated file
+    if (existsSync(cacheFile)) {
+      res.sendFile(cacheFile);
+    } else {
+      res.status(500).json({ error: 'TTS 生成失败' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
 
 // ---- SPA static hosting (serves built client) ----
 if (existsSync(CLIENT_DIST)) {

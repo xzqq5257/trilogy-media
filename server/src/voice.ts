@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { VoiceSignature } from './storage.js';
+
+const __dir = path.dirname(fileURLToPath(import.meta.url));
+const TTS_ENGINE_PY = path.resolve(__dir, '../../tts_engine.py');
 
 /** Probe media duration & mime-ish info via ffprobe. */
 export function probeMedia(filePath: string): Promise<{ durationSec: number; mime: string }> {
@@ -255,4 +259,44 @@ function clamp01(n: number): number {
 function round(n: number, d: number) {
   const f = 10 ** d;
   return Math.round(n * f) / f;
+}
+
+// ---- Edge TTS voice matching ----
+
+/**
+ * Match uploaded audio features to the closest Edge TTS voice.
+ * Returns the voice name (e.g. "zh-CN-XiaoxiaoNeural").
+ */
+export async function matchVoice(features: AudioFeatures): Promise<string> {
+  return new Promise((resolve) => {
+    const p = spawn('python3', [
+      TTS_ENGINE_PY, '--match',
+      String(features.brightness),
+      String(features.rmsDb),
+      String(features.dynamicRange),
+    ]);
+    let out = '';
+    p.stdout.on('data', (d) => (out += d.toString()));
+    p.on('close', (code) => {
+      const voice = out.trim();
+      resolve(code === 0 && voice ? voice : 'zh-CN-XiaoxiaoNeural');
+    });
+    p.on('error', () => resolve('zh-CN-XiaoxiaoNeural'));
+  });
+}
+
+/**
+ * Generate TTS audio using Edge TTS with the matched voice.
+ * Returns the path to the generated MP3 file.
+ */
+export function generateTts(text: string, voice: string, outputPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('python3', [TTS_ENGINE_PY, text, voice, outputPath]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d.toString()));
+    p.on('close', (code) => {
+      code === 0 ? resolve() : reject(new Error('TTS generation failed: ' + err.slice(-200)));
+    });
+    p.on('error', reject);
+  });
 }

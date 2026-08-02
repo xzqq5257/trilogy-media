@@ -26,9 +26,10 @@ RUN npm run build -w client
 # ---------- 运行阶段 ----------
 FROM node:20-bookworm-slim AS runtime
 
-# 装 ffmpeg（音乐生成 + 媒体探测必需）
+# 装 ffmpeg（音乐生成 + 媒体探测必需）+ Python3 + edge-tts（TTS 语音合成）
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg \
+ && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip \
+ && pip3 install --break-system-packages edge-tts \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

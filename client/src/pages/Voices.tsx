@@ -117,7 +117,7 @@ export default function Voices() {
                     {active && <span className="chip border border-accent/40 !bg-accent/20 !text-accent-glow">使用中</span>}
                   </div>
                   <div className="truncate text-xs text-white/40">
-                    {v.timbreTag} · {Math.round(v.durationSec)}s · {formatSize(v.fileSize)} · {mimeShort(v.mime)}
+                    {v.timbreTag} · {v.matchedVoice ? v.matchedVoice.replace('zh-CN-', '').replace('Neural', '') : '通用'} · {Math.round(v.durationSec)}s · {formatSize(v.fileSize)} · {mimeShort(v.mime)}
                   </div>
                 </div>
               </div>
