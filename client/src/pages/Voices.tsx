@@ -11,6 +11,7 @@ export default function Voices() {
   const activeVoiceId = useStore((s) => s.activeVoiceId);
   const setActiveVoice = useStore((s) => s.setActiveVoice);
   const addVoice = useStore((s) => s.addVoice);
+  const updateVoice = useStore((s) => s.updateVoice);
   const removeVoice = useStore((s) => s.removeVoice);
   const loadVoices = useStore((s) => s.loadVoices);
 
@@ -18,6 +19,7 @@ export default function Voices() {
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState('');
   const [previewingId, setPreviewingId] = useState<string | null>(null);
+  const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -41,8 +43,40 @@ export default function Voices() {
     tts.speak(PREVIEW_TEXT, v, {
       onEnd: () => setPreviewingId(null),
     });
-    // safety timeout in case onEnd doesn't fire
     setTimeout(() => setPreviewingId((cur) => (cur === v.id ? null : cur)), 12000);
+  };
+
+  const playDemo = async (v: VoiceSource) => {
+    if (!v.voiceModelPath) return;
+    try {
+      setPreviewingId(v.id);
+      const url = await api.voiceDemo(v.id, PREVIEW_TEXT);
+      const audio = new Audio(url);
+      audio.onended = () => {
+        setPreviewingId(null);
+        URL.revokeObjectURL(url);
+      };
+      audio.onerror = () => {
+        setPreviewingId(null);
+        URL.revokeObjectURL(url);
+      };
+      audio.play().catch(() => setPreviewingId(null));
+    } catch {
+      setPreviewingId(null);
+      alert('试听生成失败，请稍后重试');
+    }
+  };
+
+  const reanalyze = async (v: VoiceSource) => {
+    setReanalyzingId(v.id);
+    try {
+      const updated = await api.reanalyzeVoice(v.id);
+      updateVoice(updated);
+    } catch {
+      alert('重新识别失败，请稍后重试');
+    } finally {
+      setReanalyzingId(null);
+    }
   };
 
   return (
@@ -50,7 +84,7 @@ export default function Voices() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">我的声源</h1>
         <p className="mt-1 text-sm text-white/50">
-          上传任意视频或音频，系统从中模拟出独一无二的朗读声源。可保存多个，听书时自由切换。
+          上传任意视频或音频，系统提取声纹特征并克隆声音。可保存多个，听书时自由切换。
         </p>
       </div>
 
@@ -58,15 +92,15 @@ export default function Voices() {
       <div className="card mb-8 p-6">
         <div className="mb-4 flex items-center gap-2 text-sm">
           <span className="chip">1. 选素材</span>
-          <span className="chip">2. 模拟克隆</span>
-          <span className="chip">3. 存储 · 随时调用</span>
+          <span className="chip">2. 提取声纹</span>
+          <span className="chip">3. 克隆声音</span>
         </div>
         <div
           onClick={() => !busy && fileRef.current?.click()}
           className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-white/10 bg-white/5 py-10 transition hover:border-accent/50 hover:bg-accent/5"
         >
           <div className="mb-3 text-4xl">{busy ? '⏳' : '🎙️'}</div>
-          <div className="font-medium">{busy ? '正在模拟克隆声源…' : '点击上传视频 / 音频'}</div>
+          <div className="font-medium">{busy ? '正在提取声纹并克隆声音…' : '点击上传视频 / 音频'}</div>
           <div className="mt-1 text-xs text-white/40">支持 mp3 / wav / m4a / mp4 / mov / webm 等，最大 200MB</div>
           <input
             ref={fileRef}
@@ -85,7 +119,8 @@ export default function Voices() {
           />
         </div>
         <div className="mt-3 rounded-lg bg-white/5 p-3 text-xs text-white/45">
-          ℹ️ 说明：声源参数由素材内容指纹确定性生成，相同素材得到相同声源；不同素材得到不同音色（音槽、音高、语速、半音偏移、温暖度）。
+          说明：系统从上传的音频中提取 F0（基频）、MFCC（音色指纹）、频谱质心、共振峰等声纹特征，
+          生成独特的声音模型。生成语音时，会将这些特征迁移到合成语音上，实现真正的声线克隆。
         </div>
       </div>
 
@@ -98,6 +133,7 @@ export default function Voices() {
       <div className="grid gap-3">
         {voices.map((v) => {
           const active = v.id === activeVoiceId;
+          const hasModel = !!v.voiceModel;
           return (
             <div
               key={v.id}
@@ -115,30 +151,64 @@ export default function Voices() {
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium">{v.name}</span>
                     {active && <span className="chip border border-accent/40 !bg-accent/20 !text-accent-glow">使用中</span>}
+                    {!hasModel && <span className="chip !bg-yellow-500/20 !text-yellow-400 text-[10px]">通用模式</span>}
                   </div>
                   <div className="truncate text-xs text-white/40">
-                    {v.timbreTag} · {v.matchedVoice ? v.matchedVoice.replace('zh-CN-', '').replace('Neural', '') : '通用'} · {Math.round(v.durationSec)}s · {formatSize(v.fileSize)} · {mimeShort(v.mime)}
+                    {v.timbreTag} · {v.voiceModel ? (
+                      <span>F0: {v.voiceModel.f0_hz}Hz · 语速: {v.voiceModel.speaking_rate}音节/秒</span>
+                    ) : (
+                      <span>{Math.round(v.durationSec)}s · {formatSize(v.fileSize)} · {mimeShort(v.mime)}</span>
+                    )}
                   </div>
                 </div>
               </div>
 
               {/* signature */}
               <div className="flex flex-wrap gap-1.5 sm:justify-center">
-                <Sig label="音高" value={v.signature.pitch} />
-                <Sig label="语速" value={v.signature.rate} />
-                <Sig label="半音" value={`${v.signature.semitones > 0 ? '+' : ''}${v.signature.semitones}`} />
-                <Sig label="温暖度" value={`${Math.round(v.signature.warmth * 100)}%`} />
+                {v.voiceModel ? (
+                  <>
+                    <Sig label="基频" value={`${v.voiceModel.f0_hz}Hz`} />
+                    <Sig label="音色" value={`${v.voiceModel.centroid_hz}Hz`} />
+                    <Sig label="F1" value={`${v.voiceModel.f1}Hz`} />
+                    <Sig label="F2" value={`${v.voiceModel.f2}Hz`} />
+                    <Sig label="语速" value={`${v.voiceModel.speaking_rate}`} />
+                  </>
+                ) : (
+                  <>
+                    <Sig label="音高" value={v.signature.pitch} />
+                    <Sig label="语速" value={v.signature.rate} />
+                    <Sig label="半音" value={`${v.signature.semitones > 0 ? '+' : ''}${v.signature.semitones}`} />
+                    <Sig label="温暖度" value={`${Math.round(v.signature.warmth * 100)}%`} />
+                  </>
+                )}
               </div>
 
               {/* actions */}
               <div className="flex items-center gap-2 sm:ml-auto">
                 <audio controls preload="none" src={api.mediaUrl(v.samplePath)} className="h-8 w-36" />
                 <button
+                  onClick={() => reanalyze(v)}
+                  className="btn-ghost !px-2.5 !py-2 text-xs text-amber-300/70 hover:!bg-amber-500/10"
+                  disabled={reanalyzingId === v.id}
+                  title="重新提取声纹特征"
+                >
+                  {reanalyzingId === v.id ? '识别中…' : '🔄'}
+                </button>
+                {hasModel && (
+                  <button
+                    onClick={() => playDemo(v)}
+                    className="btn-ghost !px-3 !py-2 text-xs text-accent"
+                    disabled={previewingId === v.id}
+                  >
+                    {previewingId === v.id ? '生成中…' : '试听'}
+                  </button>
+                )}
+                <button
                   onClick={() => preview(v)}
                   className="btn-ghost !px-3 !py-2 text-xs"
                   disabled={previewingId === v.id}
                 >
-                  {previewingId === v.id ? '试听中…' : '🔊 试读'}
+                  {previewingId === v.id ? '播放中…' : '试读'}
                 </button>
                 {!active && (
                   <button onClick={() => setActiveVoice(v.id)} className="btn-primary !px-3 !py-2 text-xs">选用</button>

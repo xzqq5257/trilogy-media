@@ -17,7 +17,14 @@ export interface VoiceSource {
   samplePath: string;
   signature: VoiceSignature;
   timbreTag: string;
-  matchedVoice?: string;
+  voiceModelPath?: string;
+  voiceModel?: {
+    f0_hz: number;
+    centroid_hz: number;
+    f1: number;
+    f2: number;
+    speaking_rate: number;
+  };
 }
 
 export interface BookListItem {

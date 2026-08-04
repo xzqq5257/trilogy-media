@@ -10,7 +10,7 @@ import {
   ensureDirs, loadDB, saveDB, UPLOAD_DIR, MUSIC_DIR, DATA_DIR,
   type VoiceSource, type Book, type MusicTrack,
 } from './storage.js';
-import { probeMedia, fileFingerprint, analyzeAudioFeatures, signatureFromFeatures, timbreTagFor, matchVoice, generateTts } from './voice.js';
+import { probeMedia, fileFingerprint, analyzeAudioFeatures, signatureFromFeatures, timbreTagFor, extractVoiceModel, generateClonedTts, generateDemo } from './voice.js';
 import { ensureDemoMusic } from './music.js';
 import { SEED_BOOKS } from './seed.js';
 
@@ -60,6 +60,14 @@ function guessExt(mime: string) {
 // ---- Health ----
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// ---- Build version (cache-bust helper for the frontend) ----
+const BUILD_VERSION = process.env.BUILD_VERSION || new Date().toISOString().slice(0, 16);
+app.get('/api/version', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Surrogate-Control', 'no-store');
+  res.json({ version: BUILD_VERSION, ts: Date.now() });
+});
+
 // ---- Voices ----
 app.get('/api/voices', async (_req, res) => {
   const db = await loadDB();
@@ -75,8 +83,19 @@ app.post('/api/voices/upload', voiceUpload.single('file'), async (req, res) => {
     const features = await analyzeAudioFeatures(req.file.path);
     const signature = signatureFromFeatures(features, fp);
     const timbreTag = timbreTagFor(signature, features);
-    // Match to closest Edge TTS voice
-    const matchedVoice = await matchVoice(features);
+
+    // Extract voice model for cloning
+    const voiceModelDir = path.join(DATA_DIR, 'voice-models');
+    await fs.mkdir(voiceModelDir, { recursive: true });
+    const voiceModelFile = `voice-model-${nanoid(10)}.json`;
+    const voiceModelPath = path.join(voiceModelDir, voiceModelFile);
+    
+    let voiceModel = null;
+    try {
+      voiceModel = await extractVoiceModel(req.file.path, voiceModelPath);
+    } catch (e) {
+      console.warn('Voice model extraction failed, will use fallback:', (e as Error).message);
+    }
 
     const voice: VoiceSource = {
       id: nanoid(10),
@@ -89,7 +108,14 @@ app.post('/api/voices/upload', voiceUpload.single('file'), async (req, res) => {
       samplePath: `uploads/${req.file.filename}`,
       signature,
       timbreTag,
-      matchedVoice,
+      voiceModelPath: voiceModel ? `voice-models/${voiceModelFile}` : undefined,
+      voiceModel: voiceModel ? {
+        f0_hz: Math.round(voiceModel.f0.mean_hz),
+        centroid_hz: Math.round(voiceModel.spectral.centroid),
+        f1: Math.round(voiceModel.formants.F1),
+        f2: Math.round(voiceModel.formants.F2),
+        speaking_rate: Math.round(voiceModel.quality.speaking_rate * 10) / 10,
+      } : undefined,
     };
     const db = await loadDB();
     db.voices.push(voice);
@@ -106,8 +132,62 @@ app.delete('/api/voices/:id', async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: '未找到' });
   const [removed] = db.voices.splice(idx, 1);
   await fs.unlink(path.join(UPLOAD_DIR, path.basename(removed.samplePath))).catch(() => {});
+  // Clean up voice model file
+  if (removed.voiceModelPath) {
+    await fs.unlink(path.join(DATA_DIR, removed.voiceModelPath)).catch(() => {});
+  }
   await saveDB(db);
   res.json({ ok: true });
+});
+
+// ---- Re-analyze voice model ----
+app.post('/api/voices/:id/reanalyze', async (req, res) => {
+  try {
+    const db = await loadDB();
+    const idx = db.voices.findIndex((v) => v.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: '未找到' });
+
+    const voice = db.voices[idx];
+    const audioPath = path.join(UPLOAD_DIR, path.basename(voice.samplePath));
+    if (!existsSync(audioPath)) return res.status(404).json({ error: '源文件丢失' });
+
+    // Re-extract voice model
+    const voiceModelDir = path.join(DATA_DIR, 'voice-models');
+    await fs.mkdir(voiceModelDir, { recursive: true });
+
+    // Remove old model file if exists
+    if (voice.voiceModelPath) {
+      await fs.unlink(path.join(DATA_DIR, voice.voiceModelPath)).catch(() => {});
+    }
+
+    const voiceModelFile = `voice-model-${nanoid(10)}.json`;
+    const voiceModelPath = path.join(voiceModelDir, voiceModelFile);
+
+    const voiceModel = await extractVoiceModel(audioPath, voiceModelPath);
+
+    // Re-analyze audio features
+    const features = await analyzeAudioFeatures(audioPath);
+    const fp = await fileFingerprint(audioPath);
+    const signature = signatureFromFeatures(features, fp);
+    const timbreTag = timbreTagFor(signature, features);
+
+    // Update voice entry
+    voice.signature = signature;
+    voice.timbreTag = timbreTag;
+    voice.voiceModelPath = `voice-models/${voiceModelFile}`;
+    voice.voiceModel = {
+      f0_hz: Math.round(voiceModel.f0.mean_hz),
+      centroid_hz: Math.round(voiceModel.spectral.centroid),
+      f1: Math.round(voiceModel.formants.F1),
+      f2: Math.round(voiceModel.formants.F2),
+      speaking_rate: Math.round(voiceModel.quality.speaking_rate * 10) / 10,
+    };
+
+    await saveDB(db);
+    res.json(voice);
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
 });
 
 // ---- Books ----
@@ -179,7 +259,7 @@ app.get('/api/tts/health', async (_req, res) => {
   res.json({ ok: false, engine: 'unavailable' });
 });
 
-// ---- TTS endpoint ----
+// ---- TTS endpoint (voice cloning) ----
 app.post('/api/tts', async (req, res) => {
   try {
     const { text, voiceId } = req.body as { text?: string; voiceId?: string };
@@ -189,10 +269,8 @@ app.post('/api/tts', async (req, res) => {
     const voice = db.voices.find((v) => v.id === voiceId);
     if (!voice) return res.status(404).json({ error: '声源未找到' });
 
-    const ttsVoice = voice.matchedVoice || 'zh-CN-XiaoxiaoNeural';
-
-    // Cache key: hash of text + voice
-    const cacheKey = createHash('md5').update(`${text}:${ttsVoice}`).digest('hex');
+    // Cache key: hash of text + voiceId
+    const cacheKey = createHash('md5').update(`${text}:${voiceId}`).digest('hex');
     const cacheFile = path.join(TTS_CACHE_DIR, `${cacheKey}.mp3`);
 
     await fs.mkdir(TTS_CACHE_DIR, { recursive: true });
@@ -202,10 +280,22 @@ app.post('/api/tts', async (req, res) => {
       return res.sendFile(cacheFile);
     }
 
-    // Generate new TTS audio
-    await generateTts(text, ttsVoice, cacheFile);
+    // Use voice cloning if model is available, otherwise fall back to Edge TTS
+    if (voice.voiceModelPath) {
+      const modelPath = path.join(DATA_DIR, voice.voiceModelPath);
+      if (existsSync(modelPath)) {
+        await generateClonedTts(text, modelPath, cacheFile);
+        if (existsSync(cacheFile)) {
+          return res.sendFile(cacheFile);
+        }
+      }
+    }
 
-    // Verify generated file
+    // Fallback: use Edge TTS with a neutral voice
+    const { execSync } = await import('node:child_process');
+    const ttsVoice = 'zh-CN-XiaoxiaoNeural';
+    execSync(`python3 "${path.resolve(__dirname, '../tts_engine.py')}" "${text.replace(/"/g, '\\"')}" "${ttsVoice}" "${cacheFile}"`, { timeout: 30000 });
+
     if (existsSync(cacheFile)) {
       res.sendFile(cacheFile);
     } else {
@@ -216,11 +306,63 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
+// ---- Voice demo (preview cloned voice) ----
+app.post('/api/voices/:id/demo', async (req, res) => {
+  try {
+    const db = await loadDB();
+    const voice = db.voices.find((v) => v.id === req.params.id);
+    if (!voice) return res.status(404).json({ error: '声源未找到' });
+    if (!voice.voiceModelPath) return res.status(400).json({ error: '该声源未提取声音模型' });
+
+    const modelPath = path.join(DATA_DIR, voice.voiceModelPath);
+    if (!existsSync(modelPath)) return res.status(404).json({ error: '声音模型文件丢失' });
+
+    const demoText = req.body.text || '你好，这是根据你的声音样本模拟生成的语音效果。';
+
+    // Cache demo
+    const cacheKey = createHash('md5').update(`demo:${voice.id}:${demoText}`).digest('hex');
+    const demoDir = path.join(DATA_DIR, 'demo-cache');
+    await fs.mkdir(demoDir, { recursive: true });
+    const demoFile = path.join(demoDir, `${cacheKey}.mp3`);
+
+    if (existsSync(demoFile)) {
+      return res.sendFile(demoFile);
+    }
+
+    await generateDemo(demoText, modelPath, demoFile);
+    if (existsSync(demoFile)) {
+      res.sendFile(demoFile);
+    } else {
+      res.status(500).json({ error: '试听生成失败' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 // ---- SPA static hosting (serves built client) ----
 if (existsSync(CLIENT_DIST)) {
-  app.use(express.static(CLIENT_DIST));
+  // Aggressive no-cache headers for any HTML/asset response
+  const noCache = (res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    res.setHeader('Vary', '*');
+  };
+
+  app.use(
+    express.static(CLIENT_DIST, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html') || filePath.includes('/assets/')) {
+          noCache(res);
+        }
+      },
+    }),
+  );
   // SPA fallback: any non-/api, non-/media route returns index.html
   app.get(/^(?!\/api|\/media).*/, (_req, res) => {
+    noCache(res);
     res.sendFile(path.join(CLIENT_DIST, 'index.html'));
   });
 }

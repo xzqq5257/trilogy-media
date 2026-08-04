@@ -41,8 +41,16 @@ export interface VoiceSource {
   signature: VoiceSignature;
   /** short textual tag describing the simulated timbre */
   timbreTag: string;
-  /** Edge TTS voice name matched to this source (e.g. zh-CN-XiaoxiaoNeural) */
-  matchedVoice?: string;
+  /** Path to the voice model JSON file (for voice cloning) */
+  voiceModelPath?: string;
+  /** Summary of voice model for display */
+  voiceModel?: {
+    f0_hz: number;
+    centroid_hz: number;
+    f1: number;
+    f2: number;
+    speaking_rate: number;
+  };
 }
 
 export interface Book {

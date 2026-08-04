@@ -14,6 +14,7 @@ interface AppState {
   loadMusic: () => Promise<void>;
   setActiveVoice: (id: string | null) => void;
   addVoice: (v: VoiceSource) => void;
+  updateVoice: (v: VoiceSource) => void;
   removeVoice: (id: string) => Promise<void>;
 
   getBook: (id: string) => Promise<Book>;
@@ -42,6 +43,10 @@ export const useStore = create<AppState>()(
       addVoice: (v) => {
         const voices = [...get().voices, v];
         set({ voices, activeVoiceId: get().activeVoiceId ?? v.id });
+      },
+      updateVoice: (v) => {
+        const voices = get().voices.map((vo) => (vo.id === v.id ? v : vo));
+        set({ voices });
       },
       removeVoice: async (id) => {
         await api.deleteVoice(id);

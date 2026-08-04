@@ -35,6 +35,12 @@ export const api = {
   deleteVoice: (id: string) =>
     fetch(`${apiPrefix}/voices/${id}`, { method: 'DELETE' }).then((r) => r.ok),
 
+  /** Re-analyze voice model from existing uploaded file. */
+  reanalyzeVoice: (id: string) =>
+    fetch(`${apiPrefix}/voices/${id}/reanalyze`, { method: 'POST' }).then((r) =>
+      r.ok ? r.json() : Promise.reject(new Error('重新识别失败')),
+    ) as Promise<VoiceSource>,
+
   listBooks: () => jget<BookListItem[]>(`${apiPrefix}/books`),
   getBook: (id: string) => jget<Book>(`${apiPrefix}/books/${id}`),
 
@@ -69,6 +75,18 @@ export const api = {
       body: JSON.stringify({ text, voiceId }),
     });
     if (!r.ok) throw new Error('TTS 生成失败');
+    const blob = await r.blob();
+    return URL.createObjectURL(blob);
+  },
+
+  /** Generate a demo audio clip for previewing the cloned voice. */
+  voiceDemo: async (voiceId: string, text?: string): Promise<string> => {
+    const r = await fetch(`${apiPrefix}/voices/${voiceId}/demo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text || undefined }),
+    });
+    if (!r.ok) throw new Error('试听生成失败');
     const blob = await r.blob();
     return URL.createObjectURL(blob);
   },

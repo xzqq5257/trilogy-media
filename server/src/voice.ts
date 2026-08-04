@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import type { VoiceSignature } from './storage.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
-const TTS_ENGINE_PY = path.resolve(__dir, '../../tts_engine.py');
+const TTS_ENGINE_PY = path.resolve(__dir, '../tts_engine.py');
+const VOICE_CLONE_PY = path.resolve(__dir, '../voice_clone.py');
 
 /** Probe media duration & mime-ish info via ffprobe. */
 export function probeMedia(filePath: string): Promise<{ durationSec: number; mime: string }> {
@@ -66,32 +67,19 @@ export async function fileFingerprint(filePath: string): Promise<string> {
 // ---- Real audio feature analysis ----
 
 export interface AudioFeatures {
-  /** Average RMS volume in dBFS (e.g. -25 to -5) */
   rmsDb: number;
-  /** Peak volume in dBFS */
   peakDb: number;
-  /** 0-1: proportion of audio that is silence or near-silence */
   silenceRatio: number;
-  /** peak - rms: how dynamic the voice is */
   dynamicRange: number;
-  /** Estimated spectral centroid proxy: higher = brighter sound */
   brightness: number;
 }
 
-/**
- * Extract real audio characteristics from the uploaded file using ffmpeg.
- * This replaces the old random-hash approach with actual audio analysis.
- */
 export async function analyzeAudioFeatures(filePath: string): Promise<AudioFeatures> {
   const [stats, silence] = await Promise.all([
     getAudioStats(filePath),
     getSilenceInfo(filePath),
   ]);
-
-  // Compute brightness proxy from RMS and dynamic range
-  // Louder + more dynamic = typically brighter/more energetic voice
   const brightness = clamp01((stats.rmsDb + 30) / 35 + stats.dynamicRange / 40);
-
   return {
     rmsDb: stats.rmsDb,
     peakDb: stats.peakDb,
@@ -111,8 +99,7 @@ function getAudioStats(filePath: string): Promise<AudioStats> {
   return new Promise((resolve) => {
     const defaults: AudioStats = { rmsDb: -20, peakDb: -5, dynamicRange: 15 };
     const p = spawn('ffprobe', [
-      '-v', 'error',
-      '-f', 'lavfi',
+      '-v', 'error', '-f', 'lavfi',
       '-i', `amovie=${filePath},astats=metadata=1:reset=1`,
       '-show_entries', 'frame_tags=lavfi.astats.Overall.RMS_level:frame_tags=lavfi.astats.Overall.Peak_level',
       '-of', 'csv=p=0',
@@ -136,7 +123,6 @@ function getAudioStats(filePath: string): Promise<AudioStats> {
         if (count > 0) {
           const avgRms = rmsSum / count;
           const avgPeak = peakSum / count;
-          // Convert linear to dB
           const rmsDb = linearToDb(avgRms);
           const peakDb = linearToDb(avgPeak);
           resolve({
@@ -147,9 +133,7 @@ function getAudioStats(filePath: string): Promise<AudioStats> {
         } else {
           resolve(defaults);
         }
-      } catch {
-        resolve(defaults);
-      }
+      } catch { resolve(defaults); }
     });
     p.on('error', () => resolve(defaults));
   });
@@ -163,8 +147,7 @@ function getSilenceInfo(filePath: string): Promise<SilenceInfo> {
   return new Promise((resolve) => {
     const defaults: SilenceInfo = { silenceRatio: 0.3 };
     const p = spawn('ffprobe', [
-      '-v', 'error',
-      '-f', 'lavfi',
+      '-v', 'error', '-f', 'lavfi',
       '-i', `amovie=${filePath},silencedetect=n=-35dB:d=0.3`,
       '-show_entries', 'frame_tags=lavfi.silence_start:frame_tags=lavfi.silence_end',
       '-of', 'csv=p=0',
@@ -183,62 +166,125 @@ function getSilenceInfo(filePath: string): Promise<SilenceInfo> {
             totalSilence += (end - start);
           }
         }
-        // We don't have duration here, but ratio will be adjusted in analyzeAudioFeatures
-        // Use a reasonable estimate: if total silence > 0, ratio is at least 0.1
         resolve({ silenceRatio: totalSilence > 0 ? Math.min(totalSilence / 60, 0.8) : 0.15 });
-      } catch {
-        resolve(defaults);
-      }
+      } catch { resolve(defaults); }
     });
     p.on('error', () => resolve(defaults));
   });
 }
 
-// ---- Voice signature from real audio features ----
+// ---- Voice signature ----
 
 const TIMBRE_TAGS = [
   '低沉磁性', '清亮通透', '温柔舒缓', '少年清越', '醇厚温暖',
   '空灵缥缈', '慵懒沙哑', '活力明朗', '沉稳知性', '甜美柔美',
 ];
 
-/**
- * Generate a voice signature from real audio features + fingerprint.
- * The fingerprint ensures determinism (same file → same result),
- * while audio features make the voice actually reflect the source material.
- */
 export function signatureFromFeatures(features: AudioFeatures, fp: string): VoiceSignature {
-  // Use fingerprint as a deterministic offset so same file always gives same result
   const fpNum = parseInt(fp.slice(0, 8), 16) / 0xffffffff;
-
-  // ---- voiceIndex: based on brightness (brighter → higher slot) + fingerprint jitter ----
   const voiceIndex = Math.round(features.brightness * 6 + fpNum * 2) % 8;
-
-  // ---- pitch: based on brightness and RMS ----
-  // Brighter + louder voices → higher pitch (0.7 ~ 1.6)
   const pitch = round(0.7 + features.brightness * 0.5 + (features.rmsDb + 30) / 70 + fpNum * 0.15, 2);
-
-  // ---- rate: based on silence ratio and dynamic range ----
-  // More silence → slower speech; more dynamic → more varied pace
   const baseRate = 1.1 - features.silenceRatio * 0.5;
   const rate = round(clamp(baseRate + features.dynamicRange / 80 + fpNum * 0.1, 0.7, 1.6), 2);
-
-  // ---- semitones: based on brightness (brighter voice → positive shift) ----
   const semitones = Math.round((features.brightness - 0.5) * 10);
-
-  // ---- warmth: based on RMS (louder → warmer) and dynamic range ----
   const warmth = round(clamp01((features.rmsDb + 30) / 40 + features.dynamicRange / 60), 2);
-
   return { voiceIndex, pitch, rate, semitones, warmth };
 }
 
 export function timbreTagFor(sig: VoiceSignature, features?: AudioFeatures): string {
-  // Use real audio features if available for better tag assignment
   if (features) {
     const idx = Math.round(features.brightness * (TIMBRE_TAGS.length - 1));
     return TIMBRE_TAGS[clamp(idx, 0, TIMBRE_TAGS.length - 1)];
   }
   const idx = (sig.voiceIndex + Math.round(sig.warmth * 10)) % TIMBRE_TAGS.length;
   return TIMBRE_TAGS[idx];
+}
+
+// ---- Voice Clone Engine (NEW) ----
+
+export interface VoiceModel {
+  f0: { mean_hz: number; std_hz: number; min_hz: number; max_hz: number; median_hz: number; midi_note: number };
+  mfcc: { mean: number[]; std: number[] };
+  spectral: { centroid: number; bandwidth: number; rolloff: number; flatness: number; zero_crossing_rate: number; tilt: number };
+  dynamics: { rms_db: number; rms_std_db: number; peak_db: number; dynamic_range: number };
+  formants: { F1: number; F2: number; F3: number };
+  quality: { hnr_db: number; speaking_rate: number };
+  duration_sec: number;
+}
+
+/**
+ * Extract voice model from uploaded audio file.
+ * This creates a comprehensive acoustic fingerprint of the speaker's voice.
+ */
+export async function extractVoiceModel(audioPath: string, modelOutputPath: string): Promise<VoiceModel> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('python3', [
+      VOICE_CLONE_PY, 'extract',
+      audioPath, modelOutputPath,
+    ]);
+    let out = '';
+    let err = '';
+    p.stdout.on('data', (d) => (out += d.toString()));
+    p.stderr.on('data', (d) => (err += d.toString()));
+    p.on('close', async (code) => {
+      if (code !== 0) {
+        reject(new Error('Voice model extraction failed: ' + err.slice(-300)));
+        return;
+      }
+      try {
+        const model = JSON.parse(await fs.readFile(modelOutputPath, 'utf-8'));
+        resolve(model);
+      } catch (e) {
+        reject(new Error('Failed to parse voice model: ' + (e as Error).message));
+      }
+    });
+    p.on('error', reject);
+  });
+}
+
+/**
+ * Generate TTS audio using the cloned voice model.
+ * This replaces the old "match to Edge TTS voice" approach with actual voice conversion.
+ */
+export async function generateClonedTts(
+  text: string,
+  voiceModelPath: string,
+  outputPath: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('python3', [
+      VOICE_CLONE_PY, 'generate',
+      text, voiceModelPath, outputPath,
+    ]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d.toString()));
+    p.on('close', (code) => {
+      code === 0 ? resolve() : reject(new Error('Voice cloning TTS failed: ' + err.slice(-300)));
+    });
+    p.on('error', reject);
+  });
+}
+
+/**
+ * Generate a demo audio clip for previewing the cloned voice.
+ */
+export async function generateDemo(
+  text: string,
+  voiceModelPath: string,
+  outputPath: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('python3', [
+      VOICE_CLONE_PY, 'demo',
+      text, voiceModelPath, outputPath,
+    ]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d.toString()));
+    p.on('close', (code) => {
+      code === 0 ? resolve() : reject(new Error('Demo generation failed: ' + err.slice(-300)));
+    });
+    p.on('error', reject);
+  });
 }
 
 // ---- Helpers ----
@@ -259,45 +305,4 @@ function clamp01(n: number): number {
 function round(n: number, d: number) {
   const f = 10 ** d;
   return Math.round(n * f) / f;
-}
-
-// ---- Edge TTS voice matching ----
-
-/**
- * Match uploaded audio features to the closest Edge TTS voice.
- * Returns the voice name (e.g. "zh-CN-XiaoxiaoNeural").
- */
-export async function matchVoice(features: AudioFeatures): Promise<string> {
-  return new Promise((resolve) => {
-    const p = spawn('python3', [
-      TTS_ENGINE_PY, '--match',
-      String(features.brightness),
-      String(features.rmsDb),
-      String(features.dynamicRange),
-      String(features.silenceRatio),
-    ]);
-    let out = '';
-    p.stdout.on('data', (d) => (out += d.toString()));
-    p.on('close', (code) => {
-      const voice = out.trim();
-      resolve(code === 0 && voice ? voice : 'zh-CN-XiaoxiaoNeural');
-    });
-    p.on('error', () => resolve('zh-CN-XiaoxiaoNeural'));
-  });
-}
-
-/**
- * Generate TTS audio using Edge TTS with the matched voice.
- * Returns the path to the generated MP3 file.
- */
-export function generateTts(text: string, voice: string, outputPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = spawn('python3', [TTS_ENGINE_PY, text, voice, outputPath]);
-    let err = '';
-    p.stderr.on('data', (d) => (err += d.toString()));
-    p.on('close', (code) => {
-      code === 0 ? resolve() : reject(new Error('TTS generation failed: ' + err.slice(-200)));
-    });
-    p.on('error', reject);
-  });
 }
