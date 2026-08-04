@@ -1,0 +1,23 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "./Dockerfile"
+  },
+  "deploy": {
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "startCommand": "",
+    "tcpProxyApplicationPort": 7860,
+    "cronSchedule": null,
+    "cronCommand": null,
+    "numReplicas": 1,
+    "sleepApplication": true
+  },
+  "env": {
+    "DATA_DIR": "/data",
+    "NODE_ENV": "production"
+  }
+}

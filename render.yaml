@@ -1,0 +1,25 @@
+services:
+  # Trilogy Media — Read/Listen/Music + Voice Cloning
+  # Render free tier: Docker deploy, 750h/month, 512MB RAM, auto-sleep on idle
+  - type: web
+    name: trilogy-media
+    runtime: docker
+    repo: https://github.com/xzqq5257/trilogy-media.git
+    branch: main
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # Render free default PORT injection is honored by our code (process.env.PORT)
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: NODE_ENV
+        value: production
+      # Keep PORT env as-is; Render injects it automatically
+    disk:
+      name: trilogy-data
+      mountPath: /data
+      # Render free disk is ephemeral; persistent paid disks not on free tier.
+      # To keep voice models/uploads between restarts, upgrade plan later.
+      sizeGB: 1
+    healthCheckPath: /api/health
+    autoDeploy: yes

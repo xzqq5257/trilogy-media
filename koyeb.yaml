@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "build": {
+    "env": "docker",
+    "docker": {
+      "dockerfile": "Dockerfile"
+    }
+  },
+  "deploy": {
+    "cpu": "0.1",
+    "memory": "512",
+    "healthCheck": {
+      "http": {
+        "path": "/api/health"
+      }
+    },
+    "ports": [
+      {
+        "port": 7860,
+        "protocol": "HTTP",
+        "public": true
+      }
+    ],
+    "routes": [
+      {
+        "path": "/"
+      }
+    ]
+  },
+  "env": [
+    { "key": "DATA_DIR", "value": "/data" },
+    { "key": "NODE_ENV", "value": "production" },
+    { "key": "PORT", "value": "7860" }
+  ]
+}
